@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Next-Gen LLM Professional Design System - Vibrant & Modern */
+
+@layer base {
+  :root {
+    /* Unique Midnight & Electric Palette */
+    --background: 0 0% 100%;
+    --foreground: 215 25% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 12%;
+
+    /* Primary - Deep Midnight Blue */
+    --primary: 215 85% 25%;
+    --primary-foreground: 0 0% 98%;
+    --primary-hover: 215 85% 20%;
+
+    /* Secondary - Electric Cyan */
+    --secondary: 195 100% 55%;
+    --secondary-foreground: 215 25% 12%;
+
+    /* Accent - Warm Coral */
+    --accent: 15 90% 65%;
+    --accent-foreground: 0 0% 98%;
+    --accent-light: 15 90% 95%;
+
+    /* Success - Emerald */
+    --success: 155 85% 45%;
+    --success-foreground: 0 0% 98%;
+    --success-light: 155 85% 95%;
+
+    /* Warning - Golden */
+    --warning: 45 95% 60%;
+    --warning-foreground: 215 25% 12%;
+
+    /* Muted - Sophisticated Grays */
+    --muted: 215 15% 96%;
+    --muted-foreground: 215 20% 50%;
+
+    --destructive: 355 85% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 215 20% 88%;
+    --input: 215 20% 90%;
+    --ring: 195 100% 55%;
+
+    /* Sophisticated Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(215 85% 25%), hsl(195 100% 55%));
+    --gradient-hero: linear-gradient(135deg, hsl(215 85% 15%) 0%, hsl(215 85% 25%) 30%, hsl(195 100% 55%) 70%, hsl(15 90% 65%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%), hsl(215 15% 98%));
+    --gradient-accent: linear-gradient(135deg, hsl(15 90% 65%), hsl(45 95% 60%));
+    --gradient-mesh: radial-gradient(circle at 20% 50%, hsl(215 85% 25% / 0.4) 0%, transparent 50%), 
+                     radial-gradient(circle at 80% 20%, hsl(195 100% 55% / 0.3) 0%, transparent 50%), 
+                     radial-gradient(circle at 40% 80%, hsl(15 90% 65% / 0.25) 0%, transparent 50%);
+
+    /* Sophisticated Shadows */
+    --shadow-card: 0 8px 32px -8px hsl(215 85% 25% / 0.25);
+    --shadow-hover: 0 12px 40px -12px hsl(215 85% 25% / 0.35);
+    --shadow-glow: 0 0 40px hsl(195 100% 55% / 0.4);
+    --shadow-accent: 0 4px 20px -4px hsl(15 90% 65% / 0.3);
+
+    /* Professional Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    --transition-elastic: all 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 215 85% 5%;
+    --foreground: 215 15% 95%;
+
+    --card: 215 85% 8%;
+    --card-foreground: 215 15% 95%;
+
+    --popover: 215 85% 8%;
+    --popover-foreground: 215 15% 95%;
+
+    --primary: 195 100% 65%;
+    --primary-foreground: 215 85% 5%;
+    --primary-hover: 195 100% 70%;
+
+    --secondary: 215 85% 35%;
+    --secondary-foreground: 215 15% 95%;
+
+    --accent: 15 90% 70%;
+    --accent-foreground: 215 85% 5%;
+    --accent-light: 15 90% 15%;
+
+    --success: 155 85% 55%;
+    --success-foreground: 215 85% 5%;
+    --success-light: 155 85% 15%;
+
+    --warning: 45 95% 70%;
+    --warning-foreground: 215 85% 5%;
+
+    --muted: 215 85% 12%;
+    --muted-foreground: 215 20% 70%;
+
+    --destructive: 355 85% 70%;
+    --destructive-foreground: 215 15% 95%;
+
+    --border: 215 85% 18%;
+    --input: 215 85% 18%;
+    --ring: 195 100% 65%;
+
+    --gradient-hero: linear-gradient(135deg, hsl(215 85% 8%) 0%, hsl(215 85% 15%) 30%, hsl(195 100% 45%) 70%, hsl(15 90% 55%) 100%);
+    --gradient-mesh: radial-gradient(circle at 20% 50%, hsl(215 85% 15% / 0.5) 0%, transparent 50%), 
+                     radial-gradient(circle at 80% 20%, hsl(195 100% 45% / 0.4) 0%, transparent 50%), 
+                     radial-gradient(circle at 40% 80%, hsl(15 90% 55% / 0.3) 0%, transparent 50%);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

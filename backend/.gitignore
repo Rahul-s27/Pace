@@ -1,0 +1,12 @@
+
+serviceAccountKey.json
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+venv
