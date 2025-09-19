@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { WelcomePage } from "@/components/WelcomePage";
 import { CounsellingSession } from "@/components/CounsellingSession";
-import { RecommendationsPage } from "@/components/RecommendationsPage";
 import { auth } from "@/firebase";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 
@@ -13,13 +12,12 @@ interface UserProfile {
   streamOfInterest: string;
 }
 
-type AppState = "welcome" | "counselling" | "recommendations";
+type AppState = "welcome" | "counselling";
 
 const Index = () => {
   const navigate = useNavigate();
   const [currentState, setCurrentState] = useState<AppState>("welcome");
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
 
   useEffect(() => {
@@ -35,9 +33,6 @@ const Index = () => {
       if (savedState === "counselling" && savedProfile) {
         setUserProfile(JSON.parse(savedProfile));
         setCurrentState("counselling");
-      } else if (savedState === "recommendations" && savedProfile) {
-        setUserProfile(JSON.parse(savedProfile));
-        setCurrentState("recommendations");
       }
     } catch (_) {
       // ignore corrupt storage
@@ -63,15 +58,14 @@ const Index = () => {
     setCurrentState("counselling");
   };
 
-  const handleCounsellingComplete = (conversationSummary: string) => {
-    setAnswers({ conversation_summary: conversationSummary });
-    setCurrentState("recommendations");
+  const handleCounsellingComplete = (_conversationSummary: string) => {
+    // Directly navigate to features after counselling session completes
+    navigate("/features");
   };
 
   const handleRestart = () => {
     setCurrentState("welcome");
     setUserProfile(null);
-    setAnswers({});
     try {
       localStorage.removeItem("appState");
       localStorage.removeItem("userProfile");
@@ -84,11 +78,6 @@ const Index = () => {
       localStorage.removeItem("appState");
       localStorage.removeItem("userProfile");
     } catch (_) {}
-  };
-
-  const handleSubmitAndContinue = () => {
-    // Navigate to features page
-    navigate("/features");
   };
 
   if (currentState === "welcome") {
@@ -129,17 +118,6 @@ const Index = () => {
         profile={userProfile} 
         onComplete={handleCounsellingComplete}
         onBack={handleBackToWelcome}
-      />
-    );
-  }
-
-  if (currentState === "recommendations" && userProfile) {
-    return (
-      <RecommendationsPage 
-        profile={userProfile} 
-        answers={answers}
-        onRestart={handleRestart}
-        onSubmitAndContinue={handleSubmitAndContinue}
       />
     );
   }
