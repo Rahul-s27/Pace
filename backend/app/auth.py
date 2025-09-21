@@ -8,14 +8,22 @@ from .config import FIREBASE_CREDENTIALS_JSON, FIRESTORE_PROJECT
 def initialize_firebase():
     if not firebase_admin._apps:
         try:
-            if os.path.exists(FIREBASE_CREDENTIALS_JSON):
+            service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+            if service_account_json:
+                cred_dict = json.loads(service_account_json)
+                cred = credentials.Certificate(cred_dict)
+                firebase_admin.initialize_app(cred)
+                print("[INFO] Firebase initialized from FIREBASE_SERVICE_ACCOUNT env variable")
+                if FIRESTORE_PROJECT:
+                    print(f"[INFO] Using Firestore project: {FIRESTORE_PROJECT}")
+            elif os.path.exists(FIREBASE_CREDENTIALS_JSON):
                 cred = credentials.Certificate(FIREBASE_CREDENTIALS_JSON)
                 firebase_admin.initialize_app(cred)
                 print(f"[INFO] Firebase initialized with credentials: {FIREBASE_CREDENTIALS_JSON}")
                 if FIRESTORE_PROJECT:
                     print(f"[INFO] Using Firestore project: {FIRESTORE_PROJECT}")
             else:
-                raise FileNotFoundError(f"Firebase credentials not found at: {FIREBASE_CREDENTIALS_JSON}")
+                raise FileNotFoundError(f"Firebase credentials not found in FIREBASE_SERVICE_ACCOUNT env or at: {FIREBASE_CREDENTIALS_JSON}")
         except Exception as e:
             print(f"[ERROR] Failed to initialize Firebase: {e}")
             raise
