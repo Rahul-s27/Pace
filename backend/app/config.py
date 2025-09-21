@@ -1,11 +1,36 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Firebase Configuration
-FIREBASE_CREDENTIALS_JSON = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./serviceAccountKey.json")
+BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
+
+def _resolve_credentials() -> str:
+    env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    candidates = []
+    if env_path:
+        p = Path(env_path)
+        if not p.is_absolute():
+            p = (BASE_DIR / p).resolve()
+        candidates.append(p)
+    # Also try common locations
+    candidates.extend([
+        BASE_DIR / "serviceAccountKey.json",
+        (BASE_DIR.parent) / "serviceAccountKey.json",
+    ])
+    for c in candidates:
+        try:
+            if c and Path(c).exists():
+                return str(Path(c).resolve())
+        except Exception:
+            continue
+    # Fallback to default relative (may fail later with clear error)
+    return str((BASE_DIR / "serviceAccountKey.json").resolve())
+
+FIREBASE_CREDENTIALS_JSON = _resolve_credentials()
 FIRESTORE_PROJECT = os.getenv("FIRESTORE_PROJECT", "pace-36576")
 
 # API Configuration
@@ -33,3 +58,6 @@ CORS_ORIGINS = [
 # Firestore client is initialized in modules that require it using
 # firebase_admin.firestore.client() after Firebase Admin is initialized
 # See app/auth.py for initialization
+
+# Path to scraper project (backend/opportunity-scraper)
+SCRAPER_DIR = str((BASE_DIR / "opportunity-scraper").resolve())

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { 
   ArrowLeft, 
@@ -27,45 +27,32 @@ import {
   Globe
 } from "lucide-react";
 
-interface UserProfile {
-  name: string;
-  age: string;
-  educationLevel: string;
-  streamOfInterest: string;
-}
+import { saveOpportunity, type OpportunityDoc as ApiOpportunityDoc } from "../api";
 
-interface Opportunity {
-  id: string;
-  title: string;
-  type: "Internship" | "Scholarship" | "Competition" | "Job" | "Fellowship" | "Exchange";
-  organization: string;
-  description: string;
-  location: string;
-  deadline: string;
-  requirements: string[];
-  benefits: string[];
-  applicationUrl: string;
-  difficulty: "Beginner" | "Intermediate" | "Advanced";
-  category: string;
-  isRemote: boolean;
-  isUrgent: boolean;
-  rating: number;
-  applicants: number;
-  salary?: string;
-  duration?: string;
-  eligibility: string[];
+// Firestore doc type (extends API type with organization)
+type FirestoreOpportunityDoc = ApiOpportunityDoc & { organization?: string };
+import { db } from "../firebase";
+import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
+
+interface UserProfile {
+  name?: string;
+  age?: string;
+  educationLevel?: string;
+  streamOfInterest?: string;
 }
 
 const OpportunityFinder = () => {
   const navigate = useNavigate();
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedType, setSelectedType] = useState<string>("all");
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
-  const [selectedLocation, setSelectedLocation] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<string>("relevance");
+  // Simplified filters: only search query
   const [expandedOpportunity, setExpandedOpportunity] = useState<string | null>(null);
   const [savedOpportunities, setSavedOpportunities] = useState<string[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [items, setItems] = useState<FirestoreOpportunityDoc[]>([]);
+  // Canonical filter type values: '', 'JOB', 'HACKATHON', 'INTERNSHIP', 'SCHOLARSHIP'
+  const [filterType, setFilterType] = useState<string>("");
 
   useEffect(() => {
     // Load user profile from localStorage
@@ -83,194 +70,115 @@ const OpportunityFinder = () => {
     }
   }, []);
 
-  const opportunityTypes = [
-    { id: "all", label: "All", icon: <Target className="h-4 w-4" /> },
-    { id: "internship", label: "Internships", icon: <Briefcase className="h-4 w-4" /> },
-    { id: "scholarship", label: "Scholarships", icon: <Award className="h-4 w-4" /> },
-    { id: "competition", label: "Competitions", icon: <Trophy className="h-4 w-4" /> },
-    { id: "job", label: "Jobs", icon: <Users className="h-4 w-4" /> },
-    { id: "fellowship", label: "Fellowships", icon: <GraduationCap className="h-4 w-4" /> },
-    { id: "exchange", label: "Exchange Programs", icon: <Globe className="h-4 w-4" /> }
-  ];
+  // Removed type list and other filters
 
-  const categories = [
-    "Technology", "Healthcare", "Business", "Creative", "Science", "Education", "Engineering", "Finance", "Non-profit"
-  ];
+  // Removed categories and locations lists
 
-  const locations = [
-    "Remote", "New York", "San Francisco", "London", "Berlin", "Tokyo", "Singapore", "Toronto", "Sydney"
-  ];
+  // Data source config
+  const USE_BACKEND = (import.meta.env.VITE_USE_BACKEND === 'true');
+  // Fetch opportunities from backend
+  const idToken = useMemo(() => localStorage.getItem("idToken") || "", []);
+  const authUser = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("user") || "{}"); } catch { return {}; }
+  }, []);
+  const uid = authUser?.uid || "";
 
-  // Mock opportunities data
-  const opportunities: Opportunity[] = [
-    {
-      id: "1",
-      title: "Google Software Engineering Internship",
-      type: "Internship",
-      organization: "Google",
-      description: "Join Google's engineering team for a 12-week internship working on cutting-edge projects that impact billions of users worldwide.",
-      location: "Mountain View, CA",
-      deadline: "2024-03-15",
-      requirements: ["Computer Science or related field", "Strong programming skills", "Problem-solving ability", "Team collaboration"],
-      benefits: ["$7,000/month stipend", "Housing provided", "Mentorship program", "Full-time conversion opportunity"],
-      applicationUrl: "#",
-      difficulty: "Advanced",
-      category: "Technology",
-      isRemote: false,
-      isUrgent: true,
-      rating: 4.9,
-      applicants: 15420,
-      duration: "12 weeks",
-      eligibility: ["Undergraduate students", "Graduate students", "Recent graduates"]
-    },
-    {
-      id: "2",
-      title: "Microsoft Research Fellowship",
-      type: "Fellowship",
-      organization: "Microsoft Research",
-      description: "A prestigious 2-year fellowship program for exceptional PhD students in computer science and related fields.",
-      location: "Redmond, WA",
-      deadline: "2024-04-30",
-      requirements: ["PhD student in CS or related field", "Research publications", "Strong academic record", "Innovation mindset"],
-      benefits: ["$50,000 annual stipend", "Research funding", "Access to Microsoft resources", "Industry mentorship"],
-      applicationUrl: "#",
-      difficulty: "Advanced",
-      category: "Technology",
-      isRemote: false,
-      isUrgent: false,
-      rating: 4.8,
-      applicants: 892,
-      duration: "2 years",
-      eligibility: ["PhD students", "Postdoctoral researchers"]
-    },
-    {
-      id: "3",
-      title: "MIT Global Entrepreneurship Bootcamp",
-      type: "Competition",
-      organization: "MIT",
-      description: "An intensive 6-week program for aspiring entrepreneurs to develop and pitch innovative startup ideas.",
-      location: "Cambridge, MA",
-      deadline: "2024-02-28",
-      requirements: ["Entrepreneurial mindset", "Business idea", "Team of 2-4 people", "English proficiency"],
-      benefits: ["$10,000 prize pool", "Mentorship from industry leaders", "Access to MIT network", "Startup incubation"],
-      applicationUrl: "#",
-      difficulty: "Intermediate",
-      category: "Business",
-      isRemote: false,
-      isUrgent: true,
-      rating: 4.7,
-      applicants: 2340,
-      duration: "6 weeks",
-      eligibility: ["Undergraduate students", "Graduate students", "Young professionals"]
-    },
-    {
-      id: "4",
-      title: "Amazon Web Services Cloud Scholarship",
-      type: "Scholarship",
-      organization: "Amazon Web Services",
-      description: "Full scholarship for AWS cloud certification courses and hands-on training programs.",
-      location: "Remote",
-      deadline: "2024-03-31",
-      requirements: ["Basic programming knowledge", "Interest in cloud computing", "Commitment to complete program", "Academic excellence"],
-      benefits: ["Full tuition coverage", "AWS certification voucher", "Job placement assistance", "Mentorship program"],
-      applicationUrl: "#",
-      difficulty: "Beginner",
-      category: "Technology",
-      isRemote: true,
-      isUrgent: false,
-      rating: 4.6,
-      applicants: 5670,
-      duration: "4 months",
-      eligibility: ["Undergraduate students", "Recent graduates", "Career changers"]
-    },
-    {
-      id: "5",
-      title: "Apple Design Competition",
-      type: "Competition",
-      organization: "Apple",
-      description: "Annual competition for students to showcase innovative app and product design solutions.",
-      location: "Cupertino, CA",
-      deadline: "2024-05-15",
-      requirements: ["Student status", "Original design work", "Portfolio submission", "Presentation skills"],
-      benefits: ["$15,000 grand prize", "Apple product bundle", "Internship opportunity", "Design mentorship"],
-      applicationUrl: "#",
-      difficulty: "Intermediate",
-      category: "Creative",
-      isRemote: false,
-      isUrgent: false,
-      rating: 4.8,
-      applicants: 4320,
-      duration: "3 months",
-      eligibility: ["High school students", "Undergraduate students", "Graduate students"]
-    },
-    {
-      id: "6",
-      title: "Facebook Data Science Internship",
-      type: "Internship",
-      organization: "Meta",
-      description: "Work on data science projects that drive product decisions and user experience improvements.",
-      location: "Menlo Park, CA",
-      deadline: "2024-04-15",
-      requirements: ["Statistics/Data Science background", "Python/R programming", "SQL knowledge", "Analytical thinking"],
-      benefits: ["$8,000/month stipend", "Housing assistance", "Learning and development", "Networking events"],
-      applicationUrl: "#",
-      difficulty: "Advanced",
-      category: "Technology",
-      isRemote: false,
-      isUrgent: true,
-      rating: 4.5,
-      applicants: 9870,
-      duration: "12 weeks",
-      eligibility: ["Undergraduate students", "Graduate students"]
+  // No type/location/sort mapping needed
+
+  useEffect(() => {
+    setLoading(true); setError(null);
+    if (USE_BACKEND) {
+      // Use backend API search for filtering/sorting server-side
+      (async () => {
+        try {
+          if (!idToken) {
+            setItems([]); setLoading(false); return;
+          }
+          const resp = await (await import("../api")).searchOpportunities(idToken, {
+            q: searchQuery || undefined,
+            sort: "newest",
+            page: 1,
+            page_size: 50,
+            source: undefined,
+            // Send canonical type to backend; backend matches exact value in Firestore
+            type: filterType || undefined,
+          });
+          setItems(resp.items as unknown as FirestoreOpportunityDoc[]);
+        } catch (err: any) {
+          setError(err?.message || "Failed to load opportunities");
+        } finally {
+          setLoading(false);
+        }
+      })();
+      return () => {};
+    } else {
+      // Direct Firestore live updates
+      const qy = query(collection(db, "opportunities"), orderBy("fetched_at", "desc"));
+      const unsub = onSnapshot(qy,
+        (snap) => {
+          const docs: FirestoreOpportunityDoc[] = [];
+          snap.forEach(doc => {
+            docs.push({ ...(doc.data() as FirestoreOpportunityDoc), id: doc.id });
+          });
+          setItems(docs);
+          setLoading(false);
+        },
+        (err) => {
+          setError(err?.message || "Failed to load opportunities");
+          setLoading(false);
+        }
+      );
+      return () => unsub();
     }
-  ];
+  }, [USE_BACKEND, idToken, searchQuery, filterType]);
 
-  const filteredOpportunities = opportunities.filter(opportunity => {
-    const matchesSearch = opportunity.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      opportunity.organization.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      opportunity.description.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesType = selectedType === "all" || opportunity.type.toLowerCase() === selectedType;
-    const matchesCategory = selectedCategory === "all" || opportunity.category === selectedCategory;
-    const matchesLocation = selectedLocation === "all" || 
-      (selectedLocation === "Remote" && opportunity.isRemote) ||
-      opportunity.location.toLowerCase().includes(selectedLocation.toLowerCase());
-    
-    return matchesSearch && matchesType && matchesCategory && matchesLocation;
-  });
-
-  const sortedOpportunities = [...filteredOpportunities].sort((a, b) => {
-    switch (sortBy) {
-      case "deadline":
-        return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
-      case "rating":
-        return b.rating - a.rating;
-      case "applicants":
-        return b.applicants - a.applicants;
-      default:
-        return 0; // relevance - keep original order
+  // Filtering/searching
+  const filteredOpportunities = useMemo(() => {
+    let filtered = items;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      filtered = filtered.filter(
+        o => (o.title?.toLowerCase().includes(q) || o.organization?.toLowerCase().includes(q))
+      );
     }
-  });
+    if (filterType) {
+      filtered = filtered.filter(o => (String(o.type || "").toUpperCase() === filterType));
+    }
+    return filtered;
+  }, [items, searchQuery, filterType]);
+  const sortedOpportunities = filteredOpportunities;
 
   const toggleOpportunityExpansion = (opportunityId: string) => {
     setExpandedOpportunity(expandedOpportunity === opportunityId ? null : opportunityId);
   };
 
-  const toggleSaveOpportunity = (opportunityId: string) => {
-    const newSaved = savedOpportunities.includes(opportunityId)
-      ? savedOpportunities.filter(id => id !== opportunityId)
-      : [...savedOpportunities, opportunityId];
-    
-    setSavedOpportunities(newSaved);
-    localStorage.setItem("savedOpportunities", JSON.stringify(newSaved));
+  const toggleSaveOpportunity = async (opportunityId: string) => {
+    try {
+      if (idToken && uid) {
+        await saveOpportunity(idToken, uid, opportunityId);
+      }
+      const newSaved = savedOpportunities.includes(opportunityId)
+        ? savedOpportunities.filter(id => id !== opportunityId)
+        : [...savedOpportunities, opportunityId];
+      setSavedOpportunities(newSaved);
+      localStorage.setItem("savedOpportunities", JSON.stringify(newSaved));
+    } catch (e) {
+      console.error("Failed to save opportunity", e);
+    }
   };
 
   const getTypeIcon = (type: string) => {
+    const t = (type || '').toUpperCase();
     switch (type) {
-      case "Internship": return <Briefcase className="h-4 w-4" />;
-      case "Scholarship": return <Award className="h-4 w-4" />;
+      case "Internship":
+      case "INTERNSHIP": return <Briefcase className="h-4 w-4" />;
+      case "Scholarship":
+      case "SCHOLARSHIP": return <Award className="h-4 w-4" />;
       case "Competition": return <Trophy className="h-4 w-4" />;
-      case "Job": return <Users className="h-4 w-4" />;
+      case "Job":
+      case "JOB": return <Users className="h-4 w-4" />;
+      case "Hackathon":
+      case "HACKATHON": return <Trophy className="h-4 w-4" />;
       case "Fellowship": return <GraduationCap className="h-4 w-4" />;
       case "Exchange": return <Globe className="h-4 w-4" />;
       default: return <Target className="h-4 w-4" />;
@@ -278,15 +186,31 @@ const OpportunityFinder = () => {
   };
 
   const getTypeColor = (type: string) => {
+    const t = (type || '').toUpperCase();
     switch (type) {
-      case "Internship": return "text-blue-600 bg-blue-100";
-      case "Scholarship": return "text-green-600 bg-green-100";
+      case "Internship":
+      case "INTERNSHIP": return "text-blue-600 bg-blue-100";
+      case "Scholarship":
+      case "SCHOLARSHIP": return "text-green-600 bg-green-100";
       case "Competition": return "text-purple-600 bg-purple-100";
-      case "Job": return "text-orange-600 bg-orange-100";
+      case "Job":
+      case "JOB": return "text-orange-600 bg-orange-100";
+      case "Hackathon":
+      case "HACKATHON": return "text-purple-600 bg-purple-100";
       case "Fellowship": return "text-indigo-600 bg-indigo-100";
       case "Exchange": return "text-teal-600 bg-teal-100";
       default: return "text-gray-600 bg-gray-100";
     }
+  };
+
+  const displayType = (type: string) => {
+    const t = (type || '').toUpperCase();
+    if (t === 'JOB') return 'Job';
+    if (t === 'HACKATHON') return 'Hackathon';
+    if (t === 'INTERNSHIP') return 'Internship';
+    if (t === 'SCHOLARSHIP') return 'Scholarship';
+    if (t === 'COMPETITION') return 'Competition';
+    return type || 'Opportunity';
   };
 
   const getDifficultyColor = (difficulty: string) => {
@@ -347,7 +271,7 @@ const OpportunityFinder = () => {
             <div className="flex items-center gap-3">
               <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg">
                 <Sparkles className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium">{filteredOpportunities.length} opportunities</span>
+                <span className="text-sm font-medium">{sortedOpportunities.length} opportunities</span>
               </div>
             </div>
           </div>
@@ -357,135 +281,72 @@ const OpportunityFinder = () => {
       <div className="px-6 py-8">
         <div className="max-w-7xl mx-auto space-y-8">
           
-          {/* Filters */}
+          {/* Search only */}
           <div className="bg-card rounded-xl border p-6">
-            <div className="flex flex-col lg:flex-row gap-6">
-              {/* Search */}
+            <div className="grid md:grid-cols-3 gap-6 items-end">
               <div className="flex-1">
                 <label className="block text-sm font-medium mb-3">Search</label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <input
                     type="text"
-                    placeholder="Search opportunities..."
+                    placeholder="Search Unstop opportunities..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-10 pr-3 py-2 border rounded-lg bg-background"
                   />
                 </div>
               </div>
-
-              {/* Type Filter */}
-              <div className="flex-1">
-                <label className="block text-sm font-medium mb-3">Type</label>
-                <select
-                  value={selectedType}
-                  onChange={(e) => setSelectedType(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg bg-background"
-                >
-                  {opportunityTypes.map((type) => (
-                    <option key={type.id} value={type.id}>{type.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Category Filter */}
-              <div className="flex-1">
+              <div>
                 <label className="block text-sm font-medium mb-3">Category</label>
                 <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  value={filterType}
+                  onChange={(e) => setFilterType(e.target.value)}
                   className="w-full px-3 py-2 border rounded-lg bg-background"
                 >
-                  <option value="all">All Categories</option>
-                  {categories.map((category) => (
-                    <option key={category} value={category}>{category}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Location Filter */}
-              <div className="flex-1">
-                <label className="block text-sm font-medium mb-3">Location</label>
-                <select
-                  value={selectedLocation}
-                  onChange={(e) => setSelectedLocation(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg bg-background"
-                >
-                  <option value="all">All Locations</option>
-                  {locations.map((location) => (
-                    <option key={location} value={location}>{location}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Sort */}
-              <div className="flex-1">
-                <label className="block text-sm font-medium mb-3">Sort By</label>
-                <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg bg-background"
-                >
-                  <option value="relevance">Relevance</option>
-                  <option value="deadline">Deadline</option>
-                  <option value="rating">Rating</option>
-                  <option value="applicants">Popularity</option>
+                  <option value="">All</option>
+                  <option value="JOB">Jobs</option>
+                  <option value="HACKATHON">Hackathons</option>
+                  <option value="INTERNSHIP">Internships</option>
+                  <option value="SCHOLARSHIP">Scholarships</option>
                 </select>
               </div>
             </div>
           </div>
 
-          {/* Results */}
+          {/* Results header */}
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-2xl font-bold">
-                {sortedOpportunities.length} Opportunity{sortedOpportunities.length !== 1 ? 'ies' : ''} Found
-              </h2>
-              <p className="text-muted-foreground">
-                Based on your profile and preferences
-              </p>
+              <h2 className="text-2xl font-bold">{sortedOpportunities.length} Opportunity{sortedOpportunities.length !== 1 ? 'ies' : ''} Found</h2>
+              <p className="text-muted-foreground">Based on your profile and preferences</p>
             </div>
           </div>
 
           {/* Opportunity Cards */}
           <div className="space-y-6">
-            {sortedOpportunities.map((opportunity) => (
-              <div
-                key={opportunity.id}
-                className="bg-card rounded-xl border shadow-card hover:shadow-hover transition-all duration-300"
-              >
+            {loading && <div className="text-muted-foreground">Loading opportunities…</div>}
+            {error && <div className="text-red-600">{error}</div>}
+
+            {!loading && !error && sortedOpportunities.map((opportunity) => (
+              <div key={opportunity.id} className="bg-card rounded-xl border shadow-card hover:shadow-hover transition-all duration-300">
                 <div className="p-6">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
                         <h3 className="text-xl font-semibold">{opportunity.title}</h3>
-                        {opportunity.isUrgent && (
-                          <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded-full">
-                            Urgent
-                          </span>
+                        {opportunity.deadline && isDeadlineUrgent(opportunity.deadline) && (
+                          <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded-full">Urgent</span>
                         )}
-                        {opportunity.isRemote && (
-                          <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full">
-                            Remote
-                          </span>
+                        {(opportunity.location || "").toLowerCase() === "remote" && (
+                          <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full">Remote</span>
                         )}
                       </div>
-                      <p className="text-lg text-primary font-medium mb-1">{opportunity.organization}</p>
-                      <p className="text-muted-foreground mb-3">{opportunity.description}</p>
+                      <p className="text-lg text-primary font-medium mb-1">{opportunity.organization || ""}</p>
+                      <p className="text-muted-foreground mb-3">{(opportunity.description || opportunity.full_description || "").slice(0, 240)}</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getTypeColor(opportunity.type)}`}>
-                        {opportunity.type}
-                      </span>
-                      <button
-                        onClick={() => toggleSaveOpportunity(opportunity.id)}
-                        className={`p-2 rounded-lg transition-colors ${
-                          savedOpportunities.includes(opportunity.id)
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
-                        }`}
-                      >
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getTypeColor(opportunity.type || "")}`}>{displayType(opportunity.type || "")}</span>
+                      <button onClick={() => toggleSaveOpportunity(opportunity.id)} className={`p-2 rounded-lg transition-colors ${savedOpportunities.includes(opportunity.id) ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'}`}>
                         <Bookmark className="h-4 w-4" />
                       </button>
                     </div>
@@ -496,17 +357,15 @@ const OpportunityFinder = () => {
                     <div className="flex items-center gap-2">
                       <MapPin className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <div className="font-medium text-sm">{opportunity.location}</div>
+                        <div className="font-medium text-sm">{opportunity.location || ""}</div>
                         <div className="text-xs text-muted-foreground">Location</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Calendar className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <div className={`font-medium text-sm ${
-                          isDeadlineUrgent(opportunity.deadline) ? 'text-red-600' : ''
-                        }`}>
-                          {formatDeadline(opportunity.deadline)}
+                        <div className={`font-medium text-sm ${opportunity.deadline && isDeadlineUrgent(opportunity.deadline) ? 'text-red-600' : ''}`}>
+                          {opportunity.deadline ? formatDeadline(opportunity.deadline) : '—'}
                         </div>
                         <div className="text-xs text-muted-foreground">Deadline</div>
                       </div>
@@ -514,14 +373,14 @@ const OpportunityFinder = () => {
                     <div className="flex items-center gap-2">
                       <Star className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <div className="font-medium text-sm">{opportunity.rating}/5.0</div>
+                        <div className="font-medium text-sm">—</div>
                         <div className="text-xs text-muted-foreground">Rating</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Users className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <div className="font-medium text-sm">{opportunity.applicants.toLocaleString()}</div>
+                        <div className="font-medium text-sm">—</div>
                         <div className="text-xs text-muted-foreground">Applicants</div>
                       </div>
                     </div>
@@ -529,64 +388,43 @@ const OpportunityFinder = () => {
 
                   {/* Expandable Content */}
                   <div className="border-t pt-4">
-                    <button
-                      onClick={() => toggleOpportunityExpansion(opportunity.id)}
-                      className="w-full flex items-center justify-between text-left hover:bg-muted/50 rounded-lg p-2 -m-2 transition-colors"
-                    >
+                    <button onClick={() => toggleOpportunityExpansion(opportunity.id)} className="w-full flex items-center justify-between text-left hover:bg-muted/50 rounded-lg p-2 -m-2 transition-colors">
                       <span className="font-medium">View Details & Requirements</span>
-                      {expandedOpportunity === opportunity.id ? (
-                        <ChevronUp className="h-4 w-4" />
-                      ) : (
-                        <ChevronDown className="h-4 w-4" />
-                      )}
+                      {expandedOpportunity === opportunity.id ? (<ChevronUp className="h-4 w-4" />) : (<ChevronDown className="h-4 w-4" />)}
                     </button>
 
                     {expandedOpportunity === opportunity.id && (
                       <div className="mt-4 space-y-6">
-                        {/* Requirements & Benefits */}
                         <div className="grid md:grid-cols-2 gap-6">
                           <div>
                             <h4 className="font-semibold mb-3">Requirements</h4>
                             <ul className="space-y-2">
-                              {opportunity.requirements.map((req, index) => (
-                                <li key={index} className="flex items-center gap-2 text-sm">
-                                  <CheckCircle className="h-4 w-4 text-green-600" />
-                                  {req}
-                                </li>
+                              {(opportunity.skills_required || []).map((req, index) => (
+                                <li key={index} className="flex items-center gap-2 text-sm"><CheckCircle className="h-4 w-4 text-green-600" />{req}</li>
                               ))}
                             </ul>
                           </div>
                           <div>
                             <h4 className="font-semibold mb-3">Benefits</h4>
                             <ul className="space-y-2">
-                              {opportunity.benefits.map((benefit, index) => (
-                                <li key={index} className="flex items-center gap-2 text-sm">
-                                  <Award className="h-4 w-4 text-blue-600" />
-                                  {benefit}
-                                </li>
+                              {([] as string[]).map((benefit, index) => (
+                                <li key={index} className="flex items-center gap-2 text-sm"><Award className="h-4 w-4 text-blue-600" />{benefit}</li>
                               ))}
                             </ul>
                           </div>
                         </div>
 
-                        {/* Eligibility */}
                         <div>
                           <h4 className="font-semibold mb-3">Eligibility</h4>
                           <div className="flex flex-wrap gap-2">
-                            {opportunity.eligibility.map((item, index) => (
-                              <span key={index} className="px-2 py-1 bg-muted text-xs rounded-md">
-                                {item}
-                              </span>
+                            {(opportunity.education_level || []).map((item, index) => (
+                              <span key={index} className="px-2 py-1 bg-muted text-xs rounded-md">{item}</span>
                             ))}
                           </div>
                         </div>
 
-                        {/* Action Buttons */}
                         <div className="flex gap-3 pt-4 border-t">
-                          <a
-                            href={opportunity.applicationUrl}
-                            className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-lg font-medium transition-colors text-center inline-flex items-center justify-center gap-2"
-                          >
+                          <a href={opportunity.apply_link || "#"} className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-lg font-medium transition-colors text-center inline-flex items-center justify-center gap-2">
                             Apply Now
                             <ExternalLink className="h-4 w-4" />
                           </a>
@@ -607,24 +445,13 @@ const OpportunityFinder = () => {
             ))}
           </div>
 
-          {sortedOpportunities.length === 0 && (
+          {/* Empty state */}
+          {!loading && !error && sortedOpportunities.length === 0 && (
             <div className="text-center py-12">
               <div className="text-6xl mb-4">🔍</div>
               <h3 className="text-xl font-semibold mb-2">No opportunities found</h3>
-              <p className="text-muted-foreground mb-4">
-                Try adjusting your filters or search terms
-              </p>
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setSelectedType("all");
-                  setSelectedCategory("all");
-                  setSelectedLocation("all");
-                }}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-lg font-medium transition-colors"
-              >
-                Clear Filters
-              </button>
+              <p className="text-muted-foreground mb-4">Try a different keyword or clear the search</p>
+              <button onClick={() => setSearchQuery("")} className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-lg font-medium transition-colors">Clear Search</button>
             </div>
           )}
         </div>
@@ -634,3 +461,4 @@ const OpportunityFinder = () => {
 };
 
 export default OpportunityFinder;
+

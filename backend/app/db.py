@@ -58,6 +58,24 @@ def get_last_interaction(session_id: str):
         return d.to_dict()
     return None
 
+# ----- Source logs (scraper audit) -----
+def create_source_log(payload: dict) -> str:
+    """Store a scraping/audit log in source_logs/{log:<uuid>} with basic truncation for raw_html."""
+    import uuid as _uuid
+    log_id = payload.get("id") or f"log:{_uuid.uuid4()}"
+    body = {
+        **payload,
+        "id": log_id,
+        "fetched_at": payload.get("fetched_at") or SERVER_TIMESTAMP,
+    }
+    # Truncate very long raw_html to keep doc sizes reasonable
+    raw_html = body.get("raw_html")
+    if isinstance(raw_html, str) and len(raw_html) > 200000:
+        body["raw_html"] = raw_html[:200000]
+        body["raw_html_truncated"] = True
+    _db().collection("source_logs").document(log_id).set(body, merge=True)
+    return log_id
+
 # ----- Session adaptive fields helpers -----
 def get_session_proficiency(session_id: str) -> float:
     s = get_session(session_id)
@@ -186,6 +204,140 @@ def create_question_interaction(session_id: str, interaction_id: str, question_p
     _db().collection("sessions").document(session_id).collection("interactions").document(interaction_id).set(body)
     return body
 
+# ----- Opportunity Finder helpers -----
+def create_opportunity(doc_id: str | None, payload: dict) -> str:
+    """Upsert an opportunity at opportunities/{id}. Uses deterministic id if possible:
+    - If doc_id provided, use it
+    - Else if payload has source and source_id, use f"{source}:{source_id}"
+    - Else compute hash:sha256(title+company+location+apply_link)
+    """
+    import uuid as _uuid, hashlib as _hashlib
+    # Determine ID
+    if doc_id:
+        oid = doc_id.strip()
+    elif payload.get("id"):
+        oid = str(payload["id"]).strip()
+    elif payload.get("source") and payload.get("source_id"):
+        oid = f"{payload['source']}:{payload['source_id']}"
+    else:
+        base = "|".join([
+            str(payload.get("title", "")),
+            str(payload.get("company", "")),
+            str(payload.get("location", "")),
+            str(payload.get("apply_link", "")),
+        ])
+        digest = _hashlib.sha256(base.encode("utf-8")).hexdigest()
+        oid = f"hash:{digest}"
+    # Normalize schema per spec
+    body = {
+        **payload,
+        "id": oid,
+        "createdAt": payload.get("createdAt") or SERVER_TIMESTAMP,
+        "updatedAt": SERVER_TIMESTAMP,
+    }
+    _db().collection("opportunities").document(oid).set(body, merge=True)
+    return oid
+
+def list_opportunities(filters: dict = None, limit: int = 50, order_by: str | None = None, descending: bool = False, offset: int = 0) -> list[dict]:
+    """List opportunities with common filters per schema: type, education_level (array-contains), domain (array-contains), skills_required (array-contains), location, country, source, deadline_from, posted_after, tags (array-contains), archived (default false)."""
+    col = _db().collection("opportunities")
+    q = col
+    f = filters or {}
+    # Default: exclude archived unless explicitly requested
+    if f.get("archived") is None:
+        q = q.where("archived", "==", False)
+    elif isinstance(f.get("archived"), bool):
+        q = q.where("archived", "==", f.get("archived"))
+    if f.get("type"):
+        q = q.where("type", "==", f["type"]) 
+    if f.get("education_level"):
+        q = q.where("education_level", "array-contains", f["education_level"]) 
+    if f.get("domain"):
+        q = q.where("domain", "array-contains", f["domain"]) 
+    if f.get("skills_required"):
+        q = q.where("skills_required", "array-contains", f["skills_required"]) 
+    if f.get("tags"):
+        q = q.where("tags", "array-contains", f["tags"]) 
+    if f.get("location"):
+        q = q.where("location", "==", f["location"]) 
+    if f.get("country"):
+        q = q.where("country", "==", f["country"]) 
+    if f.get("source"):
+        q = q.where("source", "==", f["source"]) 
+    if f.get("deadline_from"):
+        q = q.where("deadline", ">=", f["deadline_from"]) 
+    if f.get("posted_after"):
+        q = q.where("posted_at", ">=", f["posted_after"]) 
+    if f.get("deadline_to"):
+        q = q.where("deadline", "<=", f["deadline_to"]) 
+    # Sorting (ensure indexes exist for your combos)
+    if order_by:
+        direction = firestore.Query.DESCENDING if descending else firestore.Query.ASCENDING
+        q = q.order_by(order_by, direction=direction)
+
+    if offset:
+        q = q.offset(offset)
+    docs = q.limit(limit).stream()
+    out = []
+    for d in docs:
+        item = d.to_dict() or {}
+        item["id"] = d.id
+        out.append(item)
+    return out
+
+def get_opportunity_by_id(opportunity_id: str) -> dict | None:
+    doc = _db().collection("opportunities").document(opportunity_id).get()
+    if doc and doc.exists:
+        data = doc.to_dict() or {}
+        data["id"] = doc.id
+        return data
+    return None
+
+def save_opportunity_for_user(user_id: str, opportunity_id: str, status: str = "saved", notes: str | None = None, applied_at=None):
+    body = {
+        "opportunityId": opportunity_id,
+        "status": status,  # saved | applied | interested
+        "savedAt": SERVER_TIMESTAMP,
+        "appliedAt": applied_at,  # may be None
+        "notes": notes or None,
+        "updatedAt": SERVER_TIMESTAMP,
+    }
+    _db().collection("users").document(user_id).collection("saved_opportunities").document(opportunity_id).set(body, merge=True)
+    return body
+
+def unsave_opportunity_for_user(user_id: str, opportunity_id: str):
+    _db().collection("users").document(user_id).collection("saved_opportunities").document(opportunity_id).delete()
+
+def list_saved_opportunities(user_id: str) -> list[dict]:
+    docs = _db().collection("users").document(user_id).collection("saved_opportunities").order_by("savedAt", direction=firestore.Query.DESCENDING).stream()
+    out = []
+    for d in docs:
+        item = d.to_dict() or {}
+        item["id"] = d.id
+        out.append(item)
+    return out
+
+def mark_applied_opportunity(user_id: str, opportunity_id: str, notes: str | None = None):
+    body = {
+        "opportunityId": opportunity_id,
+        "appliedAt": SERVER_TIMESTAMP,
+        "notes": notes or None,
+    }
+    # Track under applied_opportunities
+    _db().collection("users").document(user_id).collection("applied_opportunities").document(opportunity_id).set(body, merge=True)
+    # Also upsert saved_opportunities with status=applied for unified UX
+    save_opportunity_for_user(user_id, opportunity_id, status="applied", notes=notes, applied_at=SERVER_TIMESTAMP)
+    return body
+
+def list_applied_opportunities(user_id: str) -> list[dict]:
+    docs = _db().collection("users").document(user_id).collection("applied_opportunities").order_by("appliedAt", direction=firestore.Query.DESCENDING).stream()
+    out = []
+    for d in docs:
+        item = d.to_dict() or {}
+        item["id"] = d.id
+        out.append(item)
+    return out
+
 # ----- Counselling sessions (per user) -----
 def save_counselling_session(user_id: str, payload: dict) -> str:
     """Create a new counselling session document under users/{uid}/counselling_sessions/{sessionId}."""
@@ -219,3 +371,4 @@ def create_answer_interaction(session_id: str, interaction_id: str, answer_paylo
     }
     _db().collection("sessions").document(session_id).collection("interactions").document(interaction_id).set(body)
     return body
+

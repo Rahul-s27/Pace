@@ -25,20 +25,6 @@ const Index = () => {
     return () => unsub();
   }, []);
 
-  // Restore state from localStorage on first load
-  useEffect(() => {
-    try {
-      const savedState = localStorage.getItem("appState");
-      const savedProfile = localStorage.getItem("userProfile");
-      if (savedState === "counselling" && savedProfile) {
-        setUserProfile(JSON.parse(savedProfile));
-        setCurrentState("counselling");
-      }
-    } catch (_) {
-      // ignore corrupt storage
-    }
-  }, []);
-
   // Persist state whenever it changes
   useEffect(() => {
     try {

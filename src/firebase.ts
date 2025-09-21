@@ -17,6 +17,10 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
+// Firestore export
+import { getFirestore } from "firebase/firestore";
+export const db = getFirestore(app);
+
 // Auth + Google provider exports
 export const auth = getAuth(app);
 // Use session persistence so reloads don't auto-sign in from previous browser sessions

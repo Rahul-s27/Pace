@@ -1,9 +1,13 @@
 from fastapi import FastAPI, Depends, HTTPException
+import subprocess, sys
+import os
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from .config import CORS_ORIGINS, SCRAPER_DIR
+from .api_routes import router
 import uuid
-from .config import CORS_ORIGINS
+import json
+from typing import Optional, Dict, Any
+from pydantic import BaseModel
 from .auth import verify_firebase_token, get_current_user
 from .db import (
     create_session, get_session, update_session,
@@ -15,24 +19,29 @@ from .db import (
     get_session_difficulty, set_session_difficulty,
     append_session_history,
     store_generated_question, create_question_interaction, create_answer_interaction,
+    create_opportunity, list_opportunities,
+    save_opportunity_for_user, unsave_opportunity_for_user, list_saved_opportunities,
+    mark_applied_opportunity, list_applied_opportunities,
+    get_latest_counselling_session,
+    get_opportunity_by_id,
+    save_counselling_session,
 )
 from .llm import evaluate_answer as llm_evaluate_answer
 from .llm import generate_next_question as llm_generate_next_question
 from .llm import answer_question as llm_answer_question
 from .llm import generate_career_paths as llm_generate_career_paths
 
+# Optional Redis cache
+try:
+    import redis  # type: ignore
+    REDIS_URL = os.getenv("REDIS_URL")
+    _redis = redis.from_url(REDIS_URL) if REDIS_URL else None
+except Exception:
+    _redis = None
+
 app = FastAPI(title="MentorMate Backend", version="0.1.0")
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Pydantic models for request/response
+# --- Pydantic models (temporarily kept here until api_routes refactor is complete) ---
 class UserProfile(BaseModel):
     name: str
     age: str
@@ -76,163 +85,74 @@ class CounsellingResult(BaseModel):
     chosen_domain: Optional[str] = None
     difficulty_preference: Optional[str] = None
 
+class OpportunityCreate(BaseModel):
+    title: str
+    type: str  # Internship | Competition | Job | Scholarship | Fellowship
+    education_level: Optional[list[str]] = None
+    domain: Optional[list[str]] = None
+    skills_required: Optional[list[str]] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
+    eligibility: Optional[str] = None
+    deadline: Optional[str] = None  # ISO date string
+    link: Optional[str] = None
+    id: Optional[str] = None  # allow client-supplied id
+
+class OpportunitySearchRequest(BaseModel):
+    q: Optional[str] = None
+    type: Optional[str] = "All"  # Internship|Job|Competition|All
+    education_level: Optional[str] = "Auto"  # School|College|Graduate|Auto
+    domain: Optional[str] = "All"
+    location: Optional[str] = "All"  # Remote|City|CountryCode|All
+    deadline_before: Optional[str] = None  # YYYY-MM-DD
+    sort: Optional[str] = "relevance"  # relevance|deadline_soon|newest
+    page: int = 1
+    page_size: int = 20
+    source: Optional[str] = None  # e.g., 'unstop'
+
+class SaveOpportunityRequest(BaseModel):
+    opportunityId: str
+
 class CounsellingRequest(BaseModel):
     user_message: str
     session_id: Optional[str] = None
     conversation_history: Optional[list] = None
     user_profile: Optional[Dict[str, Any]] = None
 
-# Public endpoints
-@app.get("/")
-def root():
-    return {"status": "ok", "message": "MentorMate backend running."}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-# Legacy endpoint for frontend compatibility
-@app.get("/verify-token")
-async def verify_token_legacy(user_data: dict = Depends(verify_firebase_token)):
-    return {
-        "uid": user_data.get("uid"),
-        "email": user_data.get("email"),
-        "name": user_data.get("name"),
-        "picture": user_data.get("picture"),
-    }
-
-# Protected endpoints - User Profile Management
-@app.post("/profile")
-async def create_or_update_profile(
-    profile_data: UserProfile,
-    user: dict = Depends(get_current_user)
-):
-    """Create or update user profile in users/{uid}"""
+# Kick off scraper once on startup so fresh opportunities are available
+@app.on_event("startup")
+async def _run_scraper_startup():
     try:
-        profile_dict = profile_data.dict()
-        profile_dict.update({
-            "email": user["email"],
-            "name": user["name"],
-            "picture": user.get("picture")
-        })
-        
-        result = create_user_profile(user["uid"], profile_dict)
-        return {"success": True, "profile": result}
+        env = os.environ.copy()
+        # Limit pages on startup; can be overridden via env
+        env.setdefault("UNSTOP_MAX_PAGES", "1")
+        print(f"[INFO] Starting scraper in background from {SCRAPER_DIR} ...")
+        subprocess.Popen([sys.executable, "-m", "scraper.unstop_scraper"], cwd=SCRAPER_DIR, env=env)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save profile: {str(e)}")
+        print(f"[WARN] Failed to start scraper on startup: {e}")
 
-@app.get("/profile")
-async def get_profile(user: dict = Depends(get_current_user)):
-    """Get user profile from users/{uid}"""
-    try:
-        profile = get_user_profile(user["uid"])
-        if not profile:
-            raise HTTPException(status_code=404, detail="Profile not found")
-        return profile
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get profile: {str(e)}")
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Session Management Endpoints
-@app.post("/start-session")
-async def start_session(
-    session_data: SessionStart,
-    user: dict = Depends(get_current_user)
-):
-    """Create a new session in sessions/{sessionId}"""
+# Kick off scraper once on startup so fresh opportunities are available
+@app.on_event("startup")
+async def _run_scraper_startup():
     try:
-        session_id = str(uuid.uuid4())
-        
-        # Create session document
-        session_doc = create_session(
-            session_id=session_id,
-            user_id=user["uid"],
-            domain=session_data.domain,
-            metadata=session_data.metadata
-        )
-        
-        return {
-            "success": True,
-            "session_id": session_id,
-            "session": session_doc
-        }
+        env = os.environ.copy()
+        env.setdefault("UNSTOP_MAX_PAGES", "1")
+        print(f"[INFO] Starting scraper in background from {SCRAPER_DIR} ...")
+        subprocess.Popen([sys.executable, "-m", "scraper.unstop_scraper"], cwd=SCRAPER_DIR, env=env)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
+        print(f"[WARN] Failed to start scraper on startup: {e}")
 
-@app.get("/sessions")
-async def get_sessions(user: dict = Depends(get_current_user)):
-    """Get all sessions for the current user"""
-    try:
-        sessions = get_user_sessions(user["uid"])
-        return {"sessions": sessions}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
-
-@app.get("/sessions/{session_id}")
-async def get_session_detail(
-    session_id: str,
-    user: dict = Depends(get_current_user)
-):
-    """Get specific session details"""
-    try:
-        session = get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        # Verify user owns this session
-        if session.get("userId") != user["uid"]:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        return session
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get session: {str(e)}")
-
-# Interaction Management Endpoints
-@app.post("/submit-answer")
-async def submit_answer(
-    answer_data: SubmitAnswer,
-    user: dict = Depends(get_current_user)
-):
-    """Submit answer for evaluation and store interaction"""
-    try:
-        # Verify session belongs to user
-        session = get_session(answer_data.session_id)
-        if not session or session.get("userId") != user["uid"]:
-            raise HTTPException(status_code=403, detail="Access denied to session")
-        
-        # TODO: Add LLM evaluation logic here
-        # For now, create a placeholder evaluator result
-        evaluator_result = {
-            "label": "pending",
-            "score": 0.0,
-            "feedback": "Answer submitted for evaluation"
-        }
-        
-        # Store the interaction
-        interaction_payload = {
-            "interactionId": answer_data.interaction_id,
-            "answer_text": answer_data.answer_text,
-            "evaluator_result": evaluator_result,
-            "model_prompts": {
-                "eval_prompt": "TODO: Add evaluation prompt",
-                "eval_response": "TODO: Add LLM response"
-            }
-        }
-        
-        store_interaction(answer_data.session_id, answer_data.interaction_id, interaction_payload)
-        
-        return {
-            "success": True,
-            "interaction_id": answer_data.interaction_id,
-            "evaluator_result": evaluator_result
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to submit answer: {str(e)}")
+# Include all API/business logic routes
+app.include_router(router)
 
 # New: Evaluate answer using Gemini and persist results
 @app.post("/evaluate-answer")
@@ -407,6 +327,310 @@ async def get_career_paths(session_id: Optional[str] = None, user: dict = Depend
         return {"success": True, **data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate career paths: {str(e)}")
+
+# ----- Opportunity Finder API -----
+@app.post("/opportunities")
+async def create_opportunity_endpoint(payload: OpportunityCreate, user: dict = Depends(get_current_user)):
+    """Create or update an opportunity document (for admin/editor workflows)."""
+    try:
+        # Minimal authorization: any authenticated user can create; tighten if needed
+        oid = create_opportunity(payload.id, payload.dict())
+        return {"success": True, "id": oid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create opportunity: {str(e)}")
+
+@app.get("/opportunities")
+async def list_opportunities_endpoint(
+    type: Optional[str] = None,
+    education_level: Optional[str] = None,
+    domain: Optional[str] = None,
+    location: Optional[str] = None,
+    deadline_from: Optional[str] = None,
+    skill: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """List opportunities with optional filters. Filters map to Firestore queries."""
+    try:
+        filters = {}
+        if type: filters["type"] = type
+        if education_level: filters["education_level"] = education_level
+        if domain: filters["domain"] = domain
+        if location: filters["location"] = location
+        if deadline_from: filters["deadline_from"] = deadline_from
+        if skill: filters["skills_required"] = skill
+        items = list_opportunities(filters, min(max(limit, 1), 100))
+        return {"success": True, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list opportunities: {str(e)}")
+
+@app.post("/opportunities/{opportunity_id}/save")
+async def save_opportunity_endpoint(opportunity_id: str, status: Optional[str] = "saved", user: dict = Depends(get_current_user)):
+    try:
+        doc = save_opportunity_for_user(user["uid"], opportunity_id, status or "saved")
+        return {"success": True, "saved": doc}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save opportunity: {str(e)}")
+
+@app.delete("/opportunities/{opportunity_id}/save")
+async def unsave_opportunity_endpoint(opportunity_id: str, user: dict = Depends(get_current_user)):
+    try:
+        unsave_opportunity_for_user(user["uid"], opportunity_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to unsave opportunity: {str(e)}")
+
+@app.get("/opportunities/saved")
+async def list_saved_opportunities_endpoint(user: dict = Depends(get_current_user)):
+    try:
+        items = list_saved_opportunities(user["uid"])
+        return {"success": True, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list saved opportunities: {str(e)}")
+
+@app.post("/opportunities/{opportunity_id}/applied")
+async def mark_applied_opportunity_endpoint(opportunity_id: str, notes: Optional[str] = None, user: dict = Depends(get_current_user)):
+    try:
+        doc = mark_applied_opportunity(user["uid"], opportunity_id, notes)
+        return {"success": True, "applied": doc}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to mark applied: {str(e)}")
+
+@app.get("/opportunities/applied")
+async def list_applied_opportunities_endpoint(user: dict = Depends(get_current_user)):
+    try:
+        items = list_applied_opportunities(user["uid"])
+        return {"success": True, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list applied opportunities: {str(e)}")
+
+# ----- API: Opportunities Search -----
+
+def _score_relevance(item: Dict[str, Any], q: str) -> int:
+    try:
+        ql = (q or "").strip().lower()
+        if not ql:
+            return 0
+        title = str(item.get("title", "")).lower()
+        company = str(item.get("company", "")).lower()
+        desc = str(item.get("description", "")).lower() + " " + str(item.get("full_description", "")).lower()
+        score = 0
+        for token in ql.split():
+            if token in title:
+                score += 5
+            if token in company:
+                score += 2
+            if token in desc:
+                score += 1
+        return score
+    except Exception:
+        return 0
+
+def _personalized_score(item: Dict[str, Any], user_ctx: Dict[str, Any]) -> float:
+    """Compute simple personalized score per spec and return 0..100.
+    base=10, +30 domain intersects interests, +20 skills intersects, +10 location match, -20 if deadline in <=24h.
+    """
+    try:
+        score = 10.0
+        interests = set([str(x).lower() for x in (user_ctx.get("interests") or [])])
+        if not interests and isinstance(user_ctx.get("chosen_domain"), str):
+            interests = {user_ctx.get("chosen_domain").lower()}
+        domains = set([str(x).lower() for x in (item.get("domain") or [])])
+        if interests and domains and interests.intersection(domains):
+            score += 30
+
+        user_skills = set([str(x).lower() for x in (user_ctx.get("skills") or [])])
+        skills_required = set([str(x).lower() for x in (item.get("skills_required") or [])])
+        if user_skills and skills_required and user_skills.intersection(skills_required):
+            score += 20
+
+        pref_loc = (user_ctx.get("preferred_location") or user_ctx.get("location") or "").strip().lower()
+        item_loc = (item.get("location") or "").strip().lower()
+        if pref_loc and item_loc and (pref_loc == item_loc or pref_loc in item_loc or item_loc in pref_loc):
+            score += 10
+
+        # Deadline penalty if within 24h
+        from datetime import datetime, timezone
+        dl = item.get("deadline")
+        if dl:
+            try:
+                # Accept YYYY-MM-DD or ISO
+                if len(dl) == 10:
+                    dt = datetime.strptime(dl, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                else:
+                    dt = datetime.fromisoformat(dl.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                if (dt - now).total_seconds() <= 86400:
+                    score -= 20
+            except Exception:
+                pass
+        # Clamp 0..100
+        score = max(0.0, min(100.0, score))
+        return score
+    except Exception:
+        return 0.0
+
+
+def _cache_get(key: str):
+    if not _redis:
+        return None
+    try:
+        data = _redis.get(key)
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, value: dict, ttl_seconds: int = 600):
+    if not _redis:
+        return
+    try:
+        _redis.setex(key, ttl_seconds, json.dumps(value))
+    except Exception:
+        pass
+
+
+@app.post("/api/opportunities/search")
+async def search_opportunities(payload: OpportunitySearchRequest, user: dict = Depends(get_current_user)):
+    try:
+        # Cache key: user + query
+        cache_key = None
+        try:
+            cache_key = f"search:{user['uid']}:{json.dumps(payload.dict(), sort_keys=True)}"
+        except Exception:
+            pass
+        if cache_key:
+            cached = _cache_get(cache_key)
+            if cached:
+                cached["cached"] = True
+                return cached
+
+        # Build filters
+        filters: Dict[str, Any] = {}
+        if payload.type and payload.type != "All":
+            filters["type"] = payload.type
+        # Education level
+        edu = payload.education_level or "Auto"
+        if edu == "Auto":
+            latest = get_latest_counselling_session(user["uid"]) or {}
+            auto_edu = latest.get("education_level")
+            if isinstance(auto_edu, str) and auto_edu:
+                filters["education_level"] = auto_edu
+        elif edu and edu != "All":
+            filters["education_level"] = edu
+        # Domain
+        if payload.domain and payload.domain != "All":
+            filters["domain"] = payload.domain
+        # Location
+        if payload.location and payload.location != "All":
+            filters["location"] = payload.location
+        # Source filter
+        if payload.source:
+            filters["source"] = payload.source
+        # Deadline range
+        from datetime import datetime
+        if payload.deadline_before:
+            try:
+                filters["deadline_to"] = payload.deadline_before
+            except Exception:
+                pass
+
+        # Sorting
+        order_by = None
+        descending = False
+        if payload.sort == "deadline_soon":
+            order_by = "deadline"
+            descending = False
+        elif payload.sort == "newest":
+            order_by = "fetched_at"
+            descending = True
+
+        # Pagination
+        page_size = max(1, min(payload.page_size or 20, 50))
+        page = max(1, payload.page or 1)
+        offset = (page - 1) * page_size
+
+        # Query Firestore
+        items = list_opportunities(filters=filters, limit=page_size, order_by=order_by, descending=descending, offset=offset)
+
+        # Naive full-text scoring on current page if q provided
+        q = (payload.q or "").strip()
+        if q:
+            items.sort(key=lambda it: _score_relevance(it, q), reverse=True)
+
+        # Personalized scoring when sort=relevance
+        if (payload.sort or "relevance") == "relevance":
+            latest = get_latest_counselling_session(user["uid"]) or {}
+            for it in items:
+                it["score_cache"] = _personalized_score(it, latest)
+            items.sort(key=lambda it: it.get("score_cache", 0), reverse=True)
+
+        response = {
+            "total": -1,
+            "page": page,
+            "page_size": page_size,
+            "items": items,
+            "partial": True,
+            "cached": False,
+        }
+
+        # Cache the response (approximate) for 10 minutes
+        if cache_key:
+            _cache_set(cache_key, response, ttl_seconds=int(os.getenv("SEARCH_CACHE_TTL", "600")))
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@app.get("/api/opportunities/{opportunity_id}")
+async def get_opportunity(opportunity_id: str, user: dict = Depends(get_current_user)):
+    try:
+        data = get_opportunity_by_id(opportunity_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Not found")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch opportunity: {str(e)}")
+
+
+@app.post("/api/users/{uid}/saved_opportunities")
+async def save_user_opportunity(uid: str, payload: SaveOpportunityRequest, user: dict = Depends(get_current_user)):
+    try:
+        if uid != user["uid"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        saved = save_opportunity_for_user(uid, payload.opportunityId, status="saved")
+        return {"success": True, "saved": saved}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save: {str(e)}")
+
+
+@app.get("/api/users/{uid}/recommended")
+async def recommended_for_user(uid: str, user: dict = Depends(get_current_user)):
+    try:
+        if uid != user["uid"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        latest = get_latest_counselling_session(uid) or {}
+        filters: Dict[str, Any] = {"archived": False}
+        if latest.get("education_level"):
+            filters["education_level"] = latest["education_level"]
+        # Use chosen_domain or interests as domain filter if present
+        domain = latest.get("chosen_domain")
+        if isinstance(domain, str) and domain:
+            filters["domain"] = domain
+        # Prefer future deadlines
+        from datetime import datetime, timezone
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        filters["deadline_from"] = today_iso
+        items = list_opportunities(filters=filters, limit=20, order_by="deadline", descending=False)
+        return {"success": True, "items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load recommendations: {str(e)}")
 
 @app.post("/ask-followup")
 async def ask_followup(payload: AskFollowupRequest, user: dict = Depends(get_current_user)):
@@ -843,3 +1067,7 @@ async def test_create_session(payload: dict, user = Depends(verify_firebase_toke
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create test session: {str(e)}")
+
+
+
+
