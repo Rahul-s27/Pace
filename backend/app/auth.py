@@ -2,6 +2,7 @@ import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth
 from fastapi import Depends, HTTPException, Request, status
 import os
+import json
 from .config import FIREBASE_CREDENTIALS_JSON, FIRESTORE_PROJECT
 
 # Initialize Firebase Admin SDK (only once)
